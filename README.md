@@ -68,6 +68,10 @@ Lịch sử các lần archive được ghi vào:
 ~/log-archives/archive.log
 ```
 
+## Nguồn tham khảo
+
+Project này được xây dựng dựa trên yêu cầu từ [roadmap.sh](https://roadmap.sh/projects/log-archive-tool).
+
 ## Cấu trúc project
 
 ```
