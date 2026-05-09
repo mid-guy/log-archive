@@ -3,55 +3,92 @@
 set -euo pipefail
 
 ARCHIVE_DIR="$HOME/log-archives"
-LOG_FILE="$ARCHIVE_DIR/archive.log"
 
-usage() {
-    cat <<EOF
-Usage:
-  log-archive <log-directory>            Archive logs now
-  log-archive --schedule <log-directory> Install a nightly cron job (midnight)
-  log-archive --unschedule               Remove the cron job
-EOF
-    exit 1
+prompt() {
+    read -r -p "$1 [$2]: " input
+    echo "${input:-$2}"
 }
 
-[[ $# -eq 0 ]] && usage
+setup_cron() {
+    read -r -p "Bạn có muốn cài cron job để chạy tự động mỗi đêm lúc 00:00 không? (y/n) " choice
+    if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+        SCRIPT_PATH="/usr/local/bin/log-archive"
+        CRON_LINE="0 0 * * * $SCRIPT_PATH"
+        { crontab -l 2>/dev/null | grep -v "log-archive"; echo "$CRON_LINE"; } | crontab -
+        echo "Cron job đã được cài: $CRON_LINE"
+    else
+        echo "Bỏ qua cron job."
+    fi
+}
 
-# --- Schedule management ---
+run_archive() {
+    local log_dir="$1"
+    local days_logs="$2"
+    local days_backups="$3"
 
-if [[ "$1" == "--unschedule" ]]; then
-    crontab -l 2>/dev/null | grep -v "log-archive" | crontab -
-    echo "Cron job removed."
-    exit 0
-fi
+    mkdir -p "$ARCHIVE_DIR"
 
-if [[ "$1" == "--schedule" ]]; then
-    [[ $# -ne 2 ]] && usage
-    SCRIPT_PATH="$(realpath "$0")"
-    LOG_DIR_ABS="$(realpath "$2")"
-    CRON_LINE="0 0 * * * $SCRIPT_PATH $LOG_DIR_ABS"
-    # Remove any existing log-archive cron entry, then add the new one
-    EXISTING=$(crontab -l 2>/dev/null || true)
-    { echo "$EXISTING" | grep -v "log-archive"; echo "$CRON_LINE"; } | crontab -
-    echo "Cron job installed: runs nightly at midnight for '$LOG_DIR_ABS'."
-    exit 0
-fi
+    TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+    ARCHIVE_FILE="$ARCHIVE_DIR/logs_archive_${TIMESTAMP}.tar.gz"
+    LOG_FILE="$ARCHIVE_DIR/archive.log"
 
-# --- Archive ---
+    find "$log_dir" -type f -mtime +"$days_logs" -print0 \
+        | tar -czf "$ARCHIVE_FILE" --null -T - 2>/dev/null || true
 
-LOG_DIR="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Archived '$log_dir' (files older than ${days_logs}d) -> '$ARCHIVE_FILE'" \
+        | tee -a "$LOG_FILE"
 
-if [[ ! -d "$LOG_DIR" ]]; then
-    echo "Error: '$LOG_DIR' is not a directory or does not exist." >&2
-    exit 1
-fi
+    find "$ARCHIVE_DIR" -type f -name "*.tar.gz" -mtime +"$days_backups" -delete
+    echo "Đã xóa các bản archive cũ hơn ${days_backups} ngày."
+}
 
-mkdir -p "$ARCHIVE_DIR"
+log_dir=""
+days_logs=7
+days_backups=30
 
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-ARCHIVE_NAME="logs_archive_${TIMESTAMP}.tar.gz"
-ARCHIVE_PATH="$ARCHIVE_DIR/$ARCHIVE_NAME"
+while true; do
+    echo ""
+    echo "=== Log Archive Tool ==="
+    echo "1. Chọn thư mục log        [${log_dir:-chưa chọn}]"
+    echo "2. Số ngày giữ log          [${days_logs}]"
+    echo "3. Số ngày giữ bản archive  [${days_backups}]"
+    echo "4. Chạy archive"
+    echo "5. Thoát"
+    echo ""
+    read -r -p "Chọn [1-5]: " choice
 
-tar -czf "$ARCHIVE_PATH" -C "$(dirname "$LOG_DIR")" "$(basename "$LOG_DIR")"
-
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Archived '$LOG_DIR' -> '$ARCHIVE_PATH'" | tee -a "$LOG_FILE"
+    case $choice in
+        1)
+            log_dir=$(prompt "Nhập đường dẫn thư mục log" "/var/log")
+            if [[ ! -d "$log_dir" ]]; then
+                echo "Lỗi: Thư mục '$log_dir' không tồn tại."
+                log_dir=""
+            else
+                echo "Thư mục log: $log_dir"
+            fi
+            ;;
+        2)
+            days_logs=$(prompt "Giữ lại log trong bao nhiêu ngày?" "7")
+            echo "Log cũ hơn ${days_logs} ngày sẽ được archive."
+            ;;
+        3)
+            days_backups=$(prompt "Giữ bản archive trong bao nhiêu ngày?" "30")
+            echo "Archive cũ hơn ${days_backups} ngày sẽ bị xóa."
+            ;;
+        4)
+            if [[ -z "$log_dir" ]]; then
+                echo "Lỗi: Chưa chọn thư mục log. Vui lòng chọn mục 1 trước."
+            else
+                run_archive "$log_dir" "$days_logs" "$days_backups"
+                setup_cron
+            fi
+            ;;
+        5)
+            echo "Thoát."
+            break
+            ;;
+        *)
+            echo "Lựa chọn không hợp lệ. Vui lòng nhập 1-5."
+            ;;
+    esac
+done
